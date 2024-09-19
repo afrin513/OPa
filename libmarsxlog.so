@@ -1,0 +1,1866 @@
+#include "Includes.h"
+#include "obfuscate.h"
+#include "Tools.h"
+#include "fake_dlfcn.h"
+#include "imgui/imgui.h"
+#include "imgui/imgui_styles.h"
+#include "imgui/backends/imgui_impl_android.h"
+#include "imgui/backends/imgui_impl_opengl3.h"
+#include "json.hpp"
+using json = nlohmann::json;
+#include "SDK.hpp"
+using namespace SDK;
+#include "base64/base64.h"
+#include "Includes/Utils.h"
+#include "KittyMemory/MemoryPatch.h"
+#include "Includes/Macros.h"
+uintptr_t UE4;
+uintptr_t ProcessEvent_Offset;
+android_app *g_App = nullptr;
+#include <cstring>
+#define GNames_Offset 0x44c7b30
+#define GUObject_Offset 0x907abf8
+#define GetActorArray 0x5fd9ff8
+// #define CanvasMap_Offsets 0x93ed500
+#define GNativeAndroidApp_Offset 0x8eb6be8
+#define Actors_Offset 0x70
+#define ProccesEvent_Offset 0x472c8f4
+
+int totalEnemies = 0, totalBots = 0;
+static int helmett3 = 0;
+static int bag3 = 0;
+int modM4 = 101004;
+int modAKM = 101001;
+bool autoM = false;
+float autoMY = 115.0f;
+static int modXsuit = 1400129;
+#include "jsonPreferences.h"
+int sEmote1 = 2200101;
+int sEmote2 = 2200201;
+int sEmote3 = 2200301;
+bool ModSkinnn = false;
+int ModEmote1 = 0;
+namespace Active {
+  inline int SkinCarDefault = 0;
+  inline int SkinCarMod = 0;
+  inline int SkinCarNew = 0;
+}
+
+ASTExtraPlayerCharacter *g_LocalPlayer = nullptr;
+ASTExtraPlayerController *g_LocalController = nullptr;
+// ======================================================================== //
+#define SLEEP_TIME 1000LL / 90LL
+#define LIBUE4 ("libUE4.so")
+bool initImGui = false;
+#include "Menu.h"
+int screenWidth = -1, glWidth, screenHeight = -1, glHeight;
+float density = -1;
+
+static UEngine *GEngine = 0;
+UWorld *GetWorld() {
+    while (!GEngine) {
+        GEngine = UObject::FindObject<UEngine>("UAEGameEngine Transient.UAEGameEngine_1"); // Auto 
+        sleep(1);
+    }
+    if (GEngine) {
+        auto ViewPort = GEngine->GameViewport;
+
+        if (ViewPort) {
+   //return {};
+            return ViewPort->World;
+        }
+    }
+    return 0;
+}
+ 
+template<class T>
+void GetAllActors(std::vector<T *> &Actors) {
+    UGameplayStatics *gGameplayStatics = (UGameplayStatics *) gGameplayStatics->StaticClass();
+    auto GWorld = GetWorld();
+    if (GWorld) {
+        TArray<AActor *> Actors2;
+        gGameplayStatics->GetAllActorsOfClass((UObject *) GWorld, T::StaticClass(), &Actors2);
+        for (int i = 0; i < Actors2.Num(); i++) {
+            Actors.push_back((T *) Actors2[i]);
+        }
+    }
+}
+
+FVector GetBoneLocationByName(ASTExtraPlayerCharacter *Actor, const char *BoneName) {
+    return Actor->GetBonePos(BoneName, FVector());
+}
+
+TNameEntryArray *GetGNames() {
+    return ((TNameEntryArray *(*)()) (UE4 + GNames_Offset))();
+}
+inline bool FileExist(const std::string& name) {
+    if (FILE* file = fopen(name.c_str(), "r")) {
+        fclose(file);
+        return true;
+    }
+    else {
+        return false;
+    }
+}
+
+ std::vector<AActor *> getActors() {
+    auto World = GetWorld();
+    if (!World)
+        return std::vector<AActor *>();
+ 
+    auto PersistentLevel = World->PersistentLevel;
+    if (!PersistentLevel)
+        return std::vector<AActor *>();
+ 
+    struct GovnoArray {
+        uintptr_t base;
+        int32_t count;
+        int32_t max;
+    };
+    static thread_local GovnoArray Actors{};
+ 
+    Actors = *(((GovnoArray*(*)(uintptr_t))(UE4 + GetActorArray))(reinterpret_cast<uintptr_t>(PersistentLevel)));
+ 
+    if (Actors.count <= 0) {
+        return {};
+    }
+ 
+    std::vector<AActor *> actors;
+    for (int i = 0; i < Actors.count; i++) {
+        auto Actor = *(uintptr_t *) (Actors.base + (i * sizeof(uintptr_t)));
+        if (Actor) {
+            actors.push_back(reinterpret_cast<AActor *const>(Actor));
+        }
+    }
+    return actors;
+}
+
+
+// ======================================================================== //
+struct sRegion
+{
+	uintptr_t start, end;
+};
+
+std::vector<sRegion> trapRegions;
+
+bool isObjectInvalid(UObject *obj)
+{
+	if (!Tools::IsPtrValid(obj))
+	{
+		return true;
+	}
+	if (!Tools::IsPtrValid(obj->ClassPrivate))
+	{
+		return true;
+	}
+	if (obj->InternalIndex <= 0)
+	{
+		return true;
+	}
+    if (obj->NamePrivate.ComparisonIndex <= 0)
+	{
+		return true;
+	}
+	if ((uintptr_t)(obj) % sizeof(uintptr_t) != 0x0 && (uintptr_t)(obj) % sizeof(uintptr_t) != 0x4)
+	{
+		return true;
+	}
+	if (std::any_of(trapRegions.begin(), trapRegions.end(), [obj](sRegion region) { return ((uintptr_t)obj) >= region.start && ((uintptr_t)obj) <= region.end; }) || std::any_of(trapRegions.begin(), trapRegions.end(), [obj](sRegion region) { return ((uintptr_t)obj->ClassPrivate) >= region.start && ((uintptr_t)obj->ClassPrivate) <= region.end; }))
+	{
+		return true;
+	}
+	return false;
+}
+
+// ======================================================================== //
+
+static int prevXSuits = preferences.Config.Skin.XSuits;
+static auto start = std::chrono::high_resolution_clock::now();
+static bool callFunction = false;
+static bool callNotify = false;
+static bool callModSkin = false;
+// ================================================================================================================================ //
+std::chrono::steady_clock::time_point lastChangeTime;
+
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <vector>
+
+// دالة لقراءة جميع الأسطر من ملف وإعادتها كمصفوفة من السلاسل النصية
+std::vector<std::string> readAllLines(const std::string& filePath) {
+    std::ifstream file(filePath);
+    std::vector<std::string> lines;
+    std::string line;
+
+    if (!file.is_open()) {
+        std::cerr << "Error opening file: " << filePath << std::endl;
+        return lines;
+    }
+
+    while (std::getline(file, line)) {
+        lines.push_back(line);
+    }
+
+    return lines;
+}
+
+
+
+    bool ModSkinn;
+    bool KillMessage1;
+    bool KillMessage;
+    bool DeadBox;
+    int Parachute;
+    int Parachute2;
+    int XSuits;
+    int Pan;
+    int AKM;
+    int KAR;
+    int M24;
+    int AWM;
+    int Thompson;
+    int ACE32;
+    int Bizon;
+    int Vector;
+    int UMP;
+    int UZI;
+    int M16A4;
+    int M16A4_Stock;
+    int M16A4_Mag;
+    int AUG;
+    int Groza;
+    int DP28;
+    int M249;
+    int Scar;
+    int Scar_Mag;
+    int M762;
+    int M762_Mag;
+    int M416_1;
+    int M416_2;
+    int M416_3;
+    int M416_4;
+    int M416_stock;
+    int M416_reddot;
+    int UAZ;
+    int Bigfoot;
+    int CoupeRB;
+    int Buggy;
+    int Mirado;
+    int MiniBus;
+    int Boat;
+    int Dacia;
+    int Moto;
+    int P90;
+    int MOSIN;
+	int AMR;
+	int DBS;
+	int S12K;
+	int MINI14;
+	int SKS;
+	int MK14;
+    int MG3;
+	int QBZ;
+
+
+int previousParachute;
+int previousParachute2;
+int previousXSuits;
+int previousPan;
+int previousAKM;
+int previousKAR;
+int previousM24;
+int previousAWM;
+int previousThompson;
+int previousACE32;
+int previousBizon;
+int previousVector;
+int previousUMP;
+int previousUZI;
+int previousM16A4;
+int previousM16A4_Stock;
+int previousM16A4_Mag;
+int previousAUG;
+int previousGroza;
+int previousDP28;
+int previousM249;
+int previousScar;
+int previousScar_Mag;
+int previousM762;
+int previousM762_Mag;
+int previousM416_1;
+int previousM416_2;
+int previousM416_3;
+int previousM416_4;
+int previousM416_stock;
+int previousM416_reddot;
+int previousUAZ;
+int previousBigfoot;
+int previousCoupeRB;
+int previousBuggy;
+int previousMirado;
+int previousMiniBus;
+int previousBoat;
+int previousDacia;
+int previousMoto;
+int previousP90;
+int previousMOSIN;
+int previousAMR;
+int previousDBS;
+int previousS12K;
+int previousMINI14;
+int previousSKS;
+int previousMK14;
+int previousMG3;
+int previousQBZ;
+
+
+static std::unordered_set<uint32_t> AlreadyChangedSet;
+uintptr_t GetVirtualFunctionAddress(uintptr_t clazz, uintptr_t index)
+{
+    if (!clazz)
+    {
+        return 0;
+    }
+    uintptr_t vtablePtr = *(uintptr_t*)clazz;
+    if (!vtablePtr)
+    {
+        return 0;
+    }
+    // Ensure index is within bounds of the vtable
+    if (index < 0)
+    {
+        return 0;
+    }
+    return *((uintptr_t*)vtablePtr + index);
+}
+
+void ChangeItemAVc(uintptr_t thiz, int InItemID)
+{
+    if (thiz)
+    {
+        auto PrechangeitemAvatar_addr = GetVirtualFunctionAddress(thiz, 177); //vtable idx
+        if (PrechangeitemAvatar_addr)
+        {
+            return ((void(*)(uintptr_t, int, bool))PrechangeitemAvatar_addr)(thiz, InItemID, true);
+        }
+    }
+}
+
+
+
+
+
+
+
+float EspSktonThik;
+
+
+
+void (*orig_Broadcast)(ASTExtraPlayerController* thiz, struct FFatalDamageParameter* FatalDamageParameter);
+void hk_Broadcast(ASTExtraPlayerController* thiz, struct FFatalDamageParameter* FatalDamageParameter)
+{
+  
+
+   std::vector<std::string> lines = readAllLines("data/share1/d3s.json");
+
+    if (lines.size() < 59) {
+        return;
+    }
+
+     ModSkinn = std::stoi(lines[0]) != 0;
+	 KillMessage1 = std::stoi(lines[1]) != 0;
+     KillMessage = std::stoi(lines[2]) != 0;
+     DeadBox = std::stoi(lines[3]) != 0;
+	 
+     Parachute = std::stoi(lines[4]); 
+     XSuits = std::stoi(lines[5]);
+     bag3 = std::stoi(lines[6]); 
+     helmett3 = std::stoi(lines[7]); 
+     Pan = std::stoi(lines[8]); 
+     AKM = std::stoi(lines[9]); 
+     KAR = std::stoi(lines[10]); 
+     M24 = std::stoi(lines[11]); 
+     AWM = std::stoi(lines[12]); 
+     Thompson = std::stoi(lines[13]); 
+     ACE32 = std::stoi(lines[14]); 
+     Bizon = std::stoi(lines[16]); 
+     Vector = std::stoi(lines[17]); 
+     UMP = std::stoi(lines[18]); 
+     UZI = std::stoi(lines[19]); 
+     M16A4 = std::stoi(lines[20]); 
+     M16A4_Stock = std::stoi(lines[21]); 
+     M16A4_Mag = std::stoi(lines[22]); 
+     AUG = std::stoi(lines[23]); 
+     Groza = std::stoi(lines[24]); 
+     DP28 = std::stoi(lines[25]); 
+     M249 = std::stoi(lines[26]); 
+     Scar = std::stoi(lines[27]); 
+     Scar_Mag = std::stoi(lines[28]); 
+     M762 = std::stoi(lines[29]); 
+     M762_Mag = std::stoi(lines[30]); 
+     M416_1 = std::stoi(lines[31]); 
+     M416_2 = std::stoi(lines[33]); 
+     M416_3 = std::stoi(lines[34]); 
+     M416_4 = std::stoi(lines[35]); 
+     M416_stock = std::stoi(lines[36]); 
+     M416_reddot = std::stoi(lines[37]); 
+    EspSktonThik = std::stof(lines[38]);
+     UAZ = std::stof(lines[39]);
+     Bigfoot = std::stof(lines[40]);
+     CoupeRB = std::stof(lines[41]);
+     Buggy = std::stof(lines[42]);
+     Mirado = std::stof(lines[43]);
+     MiniBus = std::stof(lines[44]);
+     Boat = std::stof(lines[45]);
+     Dacia = std::stof(lines[46]);
+     Moto = std::stof(lines[47]);
+	 Parachute2 = std::stof(lines[48]);
+	 P90 = std::stoi(lines[49]); 
+     MOSIN = std::stoi(lines[50]);
+     AMR = std::stoi(lines[51]);
+	 DBS = std::stoi(lines[52]);
+	 S12K = std::stoi(lines[53]);
+	 MINI14 = std::stoi(lines[54]);
+	 MG3 = std::stoi(lines[55]);
+	 SKS = std::stoi(lines[56]);
+	 MK14 = std::stoi(lines[57]);
+	 QBZ = std::stoi(lines[58]);
+	
+  if (ModSkinn && KillMessage){
+  if (g_LocalController->PlayerKey == FatalDamageParameter->CauserKey)
+  {
+    //add your shit here
+   FatalDamageParameter->CauserClothAvatarID = XSuits;
+   if (!g_LocalPlayer->CurrentVehicle) {
+          auto WeaponManagerComponent = g_LocalPlayer->WeaponManagerComponent;
+          if (WeaponManagerComponent) {
+            auto CurrentWeaponReplicated = (ASTExtraShootWeapon * ) WeaponManagerComponent -> CurrentWeaponReplicated;
+            if (CurrentWeaponReplicated) {
+              auto ShootWeaponComponent = CurrentWeaponReplicated -> ShootWeaponComponent;
+              if (ShootWeaponComponent) {
+                int g_WeaponID = g_LocalPlayer -> WeaponManagerComponent -> CurrentWeaponReplicated -> GetWeaponID();
+
+                if (g_WeaponID == 101001) {
+
+                    FatalDamageParameter -> CauserWeaponAvatarID = AKM;
+                } else if (g_WeaponID == 101002) {
+
+                    FatalDamageParameter -> CauserWeaponAvatarID = M16A4;
+                } else if (g_WeaponID == 101003) {
+
+                    FatalDamageParameter -> CauserWeaponAvatarID = Scar;
+                } else if (g_WeaponID == 101004) {
+
+                    FatalDamageParameter -> CauserWeaponAvatarID = M416_1;
+                } else if (g_WeaponID == 101005) {
+
+                    FatalDamageParameter -> CauserWeaponAvatarID = Groza;
+                } else if (g_WeaponID == 101006) {
+
+                    FatalDamageParameter -> CauserWeaponAvatarID = AUG;
+                } else if (g_WeaponID == 101008) {           
+                    FatalDamageParameter -> CauserWeaponAvatarID = M762;
+                }  else if (g_WeaponID == 102001) {
+                    FatalDamageParameter -> CauserWeaponAvatarID = UZI;
+                } else if (g_WeaponID == 102002) {
+                    FatalDamageParameter -> CauserWeaponAvatarID = UMP;
+                } else  if (g_WeaponID == 102003) {
+                    FatalDamageParameter -> CauserWeaponAvatarID = Vector;
+                }  else if (g_WeaponID == 103002) {
+     
+                    FatalDamageParameter -> CauserWeaponAvatarID = M24;
+                } else if (g_WeaponID == 103003) {
+          
+                    FatalDamageParameter -> CauserWeaponAvatarID = AWM;
+             
+                } else if (g_WeaponID == 105002) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = DP28;
+                }  else if (g_WeaponID == 102105) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = P90;
+					
+                } else if (g_WeaponID == 103011) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = MOSIN;
+					
+                } else if (g_WeaponID == 103012) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = AMR;
+					
+                } else if (g_WeaponID == 104004) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = DBS;
+					
+                } else if (g_WeaponID == 104003) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = S12K;
+					
+                } else if (g_WeaponID == 103006) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = MINI14;
+					
+                } else if (g_WeaponID == 103007) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = MK14;
+					
+                } else if (g_WeaponID == 103004) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = SKS;
+                } else if (g_WeaponID == 105010) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = MG3;
+                } else if (g_WeaponID == 101007) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = QBZ;
+                } else if (g_WeaponID == 105001) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = M249;
+                } else if (g_WeaponID == 101102) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = ACE32;
+                }  else if (g_WeaponID == 103001) {
+					
+                    FatalDamageParameter -> CauserWeaponAvatarID = KAR;
+                }
+
+              }
+            }
+          }
+        }
+      
+  }
+}
+  return orig_Broadcast(thiz, FatalDamageParameter);
+}
+
+
+
+#define COLOR_BLACK FLinearColor(0, 0, 0, 1.f)
+#define COLOR_WHITE FLinearColor(1.f, 1.f, 1.f, 1.f)
+#define COLOR_RED   FLinearColor(1.f, 0, 0, 1.f)
+#define COLOR_LIME  FLinearColor(0, 1.f, 0, 1.f)
+#define COLOR_BLUE  FLinearColor(0, 0, 1.f, 1.f)
+#define COLOR_CAR   FLinearColor(1.f, 0.5f, 1.f, 1.f)
+#define GREEN       FLinearColor(0 / 255.f, 153 / 255.f, 0 / 255.f, 1.f)
+#define ABU         FLinearColor(0 / 255.f, 204 / 255.f, 204 / 255.f, 1.f)
+#define COLOR_GREEN FLinearColor(0, 0.5f, 0, 1.f)
+#define COLOR_PLAYER FLinearColor(1.000f, 0.620f, 0.150f, 1.000f)
+#define COLOR_YELLOW FLinearColor(1.000f, 1.000f, 0.000f, 1.000f)
+
+
+
+void DrawLine(AHUD *HUD, FVector2D posFrom, FVector2D posTo, float Thickness, FLinearColor Color) {
+   HUD->Canvas->K2_DrawLine(FVector2D(posFrom.X, posFrom.Y), FVector2D(posTo.X, posTo.Y), Thickness,Color);
+}
+
+void RenderESPPRIVATE(AHUD *HUD, int ScreenWidth, int ScreenHeight) {
+  updateSkin();
+        ASTExtraPlayerCharacter *localPlayer = 0;
+        ASTExtraPlayerController *localPlayerController = 0;
+
+
+   std::vector<std::string> lines = readAllLines("data/share1/d3s.json");
+
+    if (lines.size() < 59) {
+        return;
+    }
+
+     ModSkinn = std::stoi(lines[0]) != 0;
+	 KillMessage1 = std::stoi(lines[1]) != 0;
+     KillMessage = std::stoi(lines[2]) != 0;
+     DeadBox = std::stoi(lines[3]) != 0;
+	 
+     Parachute = std::stoi(lines[4]); 
+     XSuits = std::stoi(lines[5]);
+     bag3 = std::stoi(lines[6]); 
+     helmett3 = std::stoi(lines[7]); 
+     Pan = std::stoi(lines[8]); 
+     AKM = std::stoi(lines[9]); 
+     KAR = std::stoi(lines[10]); 
+     M24 = std::stoi(lines[11]); 
+     AWM = std::stoi(lines[12]); 
+     Thompson = std::stoi(lines[13]); 
+     ACE32 = std::stoi(lines[14]); 
+     Bizon = std::stoi(lines[16]); 
+     Vector = std::stoi(lines[17]); 
+     UMP = std::stoi(lines[18]); 
+     UZI = std::stoi(lines[19]); 
+     M16A4 = std::stoi(lines[20]); 
+     M16A4_Stock = std::stoi(lines[21]); 
+     M16A4_Mag = std::stoi(lines[22]); 
+     AUG = std::stoi(lines[23]); 
+     Groza = std::stoi(lines[24]); 
+     DP28 = std::stoi(lines[25]); 
+     M249 = std::stoi(lines[26]); 
+     Scar = std::stoi(lines[27]); 
+     Scar_Mag = std::stoi(lines[28]); 
+     M762 = std::stoi(lines[29]); 
+     M762_Mag = std::stoi(lines[30]); 
+     M416_1 = std::stoi(lines[31]); 
+     M416_2 = std::stoi(lines[33]); 
+     M416_3 = std::stoi(lines[34]); 
+     M416_4 = std::stoi(lines[35]); 
+     M416_stock = std::stoi(lines[36]); 
+     M416_reddot = std::stoi(lines[37]); 
+    EspSktonThik = std::stof(lines[38]);
+     UAZ = std::stof(lines[39]);
+     Bigfoot = std::stof(lines[40]);
+     CoupeRB = std::stof(lines[41]);
+     Buggy = std::stof(lines[42]);
+     Mirado = std::stof(lines[43]);
+     MiniBus = std::stof(lines[44]);
+     Boat = std::stof(lines[45]);
+     Dacia = std::stof(lines[46]);
+     Moto = std::stof(lines[47]);
+	 Parachute2 = std::stof(lines[48]);
+	 P90 = std::stoi(lines[49]); 
+     MOSIN = std::stoi(lines[50]);
+     AMR =std::stoi(lines[51]);
+	 DBS =std::stoi(lines[52]);
+	 S12K =std::stoi(lines[53]);
+	 MINI14 =std::stoi(lines[54]);
+	 MG3 =std::stoi(lines[55]);
+	 SKS =std::stoi(lines[56]);
+	 MK14 =std::stoi(lines[57]);
+	 QBZ =std::stoi(lines[58]);
+	 
+bool hasChanged = (previousParachute != Parachute) || 
+                  (previousParachute2 != Parachute2) || 
+                  (previousXSuits != XSuits) || 
+                  (previousPan != Pan) ||
+                  (previousAKM != AKM) ||
+                  (previousKAR != KAR) ||
+                  (previousM24 != M24) ||
+                  (previousAWM != AWM) ||
+                  (previousThompson != Thompson) ||
+                  (previousACE32 != ACE32) ||
+                  (previousBizon != Bizon) ||
+                  (previousVector != Vector) ||
+                  (previousUMP != UMP) ||
+                  (previousUZI != UZI) ||
+                  (previousM16A4 != M16A4) ||
+                  (previousM16A4_Stock != M16A4_Stock) ||
+                  (previousM16A4_Mag != M16A4_Mag) ||
+                  (previousAUG != AUG) ||
+                  (previousGroza != Groza) ||
+                  (previousDP28 != DP28) ||
+                  (previousM249 != M249) ||
+                  (previousScar != Scar) ||
+                  (previousScar_Mag != Scar_Mag) ||
+                  (previousM762 != M762) ||
+                  (previousM762_Mag != M762_Mag) ||
+                  (previousM416_1 != M416_1) ||
+                  (previousM416_2 != M416_2) ||
+                  (previousM416_3 != M416_3) ||
+                  (previousM416_4 != M416_4) ||
+                  (previousM416_stock != M416_stock) ||
+                  (previousM416_reddot != M416_reddot) ||
+                  (previousUAZ != UAZ) ||
+                  (previousBigfoot != Bigfoot) ||
+                  (previousCoupeRB != CoupeRB) ||
+                  (previousBuggy != Buggy) ||
+                  (previousMirado != Mirado) ||
+                  (previousMiniBus != MiniBus) ||
+                  (previousBoat != Boat) ||
+                  (previousDacia != Dacia) ||
+                  (previousMoto != Moto) ||
+                  (previousP90 != P90) ||
+                  (previousMOSIN != MOSIN) ||
+                  (previousAMR != AMR) ||
+                  (previousDBS != DBS) ||
+                  (previousS12K != S12K) ||
+                  (previousMINI14 != MINI14) ||
+                  (previousSKS != SKS) ||
+                  (previousMK14 != MK14) ||
+                  (previousMG3 != MG3) ||
+                  (previousQBZ != QBZ);
+  int loopCount = 0;
+  int timesleep = 17;
+
+  auto startTime = std::chrono::high_resolution_clock::now();
+if (hasChanged) {
+    start = std::chrono::high_resolution_clock::now();
+	std::this_thread::sleep_for(std::chrono::milliseconds(timesleep)); //~40/1s
+   //   auto currentTime = std::chrono::steady_clock::now();
+	 std::chrono::time_point < std::chrono::high_resolution_clock > currentTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast < std::chrono::milliseconds > (currentTime - startTime).count();
+   callFunction = true;
+     updateSkin();
+    // Update previous values
+    previousParachute = Parachute;
+    previousParachute2 = Parachute2;
+    previousXSuits = XSuits;
+    previousPan = Pan;
+    previousAKM = AKM;
+    previousKAR = KAR;
+    previousM24 = M24;
+    previousAWM = AWM;
+    previousThompson = Thompson;
+    previousACE32 = ACE32;
+    previousBizon = Bizon;
+    previousVector = Vector;
+    previousUMP = UMP;
+    previousUZI = UZI;
+    previousM16A4 = M16A4;
+    previousM16A4_Stock = M16A4_Stock;
+    previousM16A4_Mag = M16A4_Mag;
+    previousAUG = AUG;
+    previousGroza = Groza;
+    previousDP28 = DP28;
+    previousM249 = M249;
+    previousScar = Scar;
+    previousScar_Mag = Scar_Mag;
+    previousM762 = M762;
+    previousM762_Mag = M762_Mag;
+    previousM416_1 = M416_1;
+    previousM416_2 = M416_2;
+    previousM416_3 = M416_3;
+    previousM416_4 = M416_4;
+    previousM416_stock = M416_stock;
+    previousM416_reddot = M416_reddot;
+    previousUAZ = UAZ;
+    previousBigfoot = Bigfoot;
+    previousCoupeRB = CoupeRB;
+    previousBuggy = Buggy;
+    previousMirado = Mirado;
+    previousMiniBus = MiniBus;
+    previousBoat = Boat;
+    previousDacia = Dacia;
+    previousMoto = Moto;
+    previousP90 = P90;
+    previousMOSIN = MOSIN;
+    previousAMR = AMR;
+    previousDBS = DBS;
+    previousS12K = S12K;
+    previousMINI14 = MINI14;
+    previousSKS = SKS;
+    previousMK14 = MK14;
+    previousMG3 = MG3;
+    previousQBZ = QBZ;
+    if (duration >= 1000) {
+      if (loopCount >= 15)
+        ++timesleep;
+      else
+
+      --timesleep;
+      startTime = std::chrono::high_resolution_clock::now();
+      loopCount = 0;
+    }
+}
+
+
+        UCanvas *Canvas = HUD->Canvas;
+        if (Canvas) {
+
+            
+            UGameplayStatics *gGameplayStatics = (UGameplayStatics *) UGameplayStatics::StaticClass();
+            auto GWorld = GetWorld();
+            if (GWorld) {
+                UNetDriver *NetDriver = GWorld->NetDriver;
+                if (NetDriver) {
+                    UNetConnection *ServerConnection = NetDriver->ServerConnection;
+                    if (ServerConnection) {
+                        localPlayerController = (ASTExtraPlayerController *) ServerConnection->PlayerController;
+                    }
+                }
+
+                if (localPlayerController) {
+                     
+                    std::vector<ASTExtraPlayerCharacter *> PlayerCharacter;
+                    GetAllActors(PlayerCharacter);
+                    for (auto actor = PlayerCharacter.begin();
+                         actor != PlayerCharacter.end(); actor++) {
+                        auto Actor = *actor;
+
+                        if (Actor->PlayerKey ==
+                            ((ASTExtraPlayerController *) localPlayerController)->PlayerKey) {
+                            localPlayer = Actor;
+                            break;
+                        }
+                    }
+
+                    {
+                        if (localPlayer) {
+							
+							
+							
+							
+							
+							
+		
+auto Actors = getActors();
+for (int i = 0; i < Actors.size(); i++) {
+auto Actor = Actors[i];
+if (isObjectInvalid(Actor))
+continue;
+
+if (Actor->IsA(ASTExtraPlayerCharacter::StaticClass())) {
+
+UGameplayStatics* gGameplayStatics = (UGameplayStatics*)UGameplayStatics::StaticClass();
+auto Player = (ASTExtraPlayerCharacter*)Actor;		
+								
+                            float Distance = localPlayer->GetDistanceTo(Player) / 100.0f;
+                            if (Distance > 500.0f)
+                                continue;
+                            if (Player->PlayerKey == g_LocalController->PlayerKey)
+                                continue;
+
+                            if (Player->TeamID == g_LocalController->TeamID)
+                                continue;
+
+                            if (Player->bDead)
+                                continue;
+								int healthOutline;
+                            if (Player->bEnsure)
+                                totalBots++;
+                           else totalEnemies++;
+
+              /*               if (Config.ESPMenu.NoBot)
+                            if (Player->bEnsure)
+                                continue;
+ */
+     							float magic_number = (Distance);
+                    float mx = (glWidth / 4) / magic_number;
+
+                    float healthLength = glWidth / 17;
+                    if (healthLength < mx)
+                        healthLength = mx;	
+#include <vector>
+#include <string>
+
+ EspSktonThik = 1.5f;
+
+if (KillMessage1) {
+    // Define bone structures for different parts of the skeleton
+    static std::vector<std::string> right_arm{"spine_03", "clavicle_r", "upperarm_r", "lowerarm_r", "hand_r", "item_r"};
+    static std::vector<std::string> left_arm{"spine_03", "clavicle_l", "upperarm_l", "lowerarm_l", "hand_l", "item_l"};
+    static std::vector<std::string> spine{"Head", "neck_01", "spine_03", "spine_02", "spine_01", "pelvis"};
+    static std::vector<std::string> lower_right{"pelvis", "thigh_r", "calf_r", "foot_r"};
+    static std::vector<std::string> lower_left{"pelvis", "thigh_l", "calf_l", "foot_l"};
+    
+    // Combine all bone structures into one skeleton vector
+    static std::vector<std::vector<std::string>> skeleton{right_arm, left_arm, spine, lower_right, lower_left};
+
+    for (auto &boneStructure : skeleton) {
+        std::string lastBone;
+        
+        for (std::string &currentBone : boneStructure) {
+            if (!lastBone.empty()) {
+                // Get world coordinates of the bones
+                FVector wBoneFrom = GetBoneLocationByName(Player, lastBone.c_str());
+                FVector wBoneTo = GetBoneLocationByName(Player, currentBone.c_str());
+                
+                FVector2D boneFrom, boneTo;
+
+                // Project world coordinates to screen coordinates
+                if (gGameplayStatics->ProjectWorldToScreen(localPlayerController, wBoneFrom, false, &boneFrom) && 
+                    gGameplayStatics->ProjectWorldToScreen(localPlayerController, wBoneTo, false, &boneTo)) {
+
+                    // Check if the bone is visible
+                    bool IsVisible = g_LocalController->LineOfSightTo(g_LocalController->PlayerCameraManager, Player->GetBonePos(currentBone.c_str(), {}), true);
+                    
+                    FLinearColor lineColor;
+
+                    if (IsVisible) {
+                        if (Player->bEnsure) {
+                            lineColor = COLOR_LIME;
+                        } else {
+                            lineColor = COLOR_GREEN;
+                        }
+                    } else {
+                        if (Player->bEnsure) {
+                            lineColor = COLOR_WHITE;
+                        } else {
+                            lineColor = COLOR_RED;
+                        }
+                    }
+
+                    // Draw the line between the two bones
+                    // HUD->Canvas->K2_DrawLine(boneFrom, boneTo, EspSktonThik, lineColor);
+					 DrawLine(HUD, boneFrom, boneTo, EspSktonThik, lineColor);
+                }
+            }
+            lastBone = currentBone;
+        }
+    }
+					}			}}
+       if( DeadBox){
+                                   std::vector<APlayerTombBox *> TombBox;
+                        GetAllActors(TombBox);
+                        for (auto actor = TombBox.begin();
+                             actor != TombBox.end(); actor++) {
+                            auto TombBoxx = *actor;
+                            if (TombBoxx && TombBoxx->DamageCauser && TombBoxx->TargetPlayer && g_LocalController) // Check pointers before dereferencing
+                            {
+                                if (TombBoxx->DamageCauser->PlayerKey == g_LocalController->PlayerKey)
+                                {
+                                    auto PlayerKey = TombBoxx->TargetPlayer->PlayerKey;
+                                    if (AlreadyChangedSet.find(PlayerKey) == AlreadyChangedSet.end())
+                                    {
+                                        if (g_LocalPlayer && g_LocalPlayer->WeaponManagerComponent) // Check pointers before dereferencing
+                                        {
+                                            auto DeadBoxAvatarCompPtr = (uintptr_t*)((uintptr_t)TombBoxx + 0x4e0); //DeadBoxAvatarComponent_BP_C* DeadBoxAvatarComponent_BP //3.4 DONE
+                                            if (DeadBoxAvatarCompPtr)
+                                            {
+                                                auto DeadBoxAvatarComp = *DeadBoxAvatarCompPtr;
+                                                auto CurrentWeaponReplicated = g_LocalPlayer->WeaponManagerComponent->CurrentWeaponReplicated;
+                                                if (CurrentWeaponReplicated)
+                                                {
+                                               
+auto Weaponid = g_LocalPlayer->WeaponManagerComponent->CurrentWeaponReplicated->GetWeaponID();
+       if (Weaponid == 101004) {
+       ChangeItemAVc(DeadBoxAvatarComp, M416_1);
+       AlreadyChangedSet.insert(PlayerKey);
+       } else if (Weaponid == 101001) {
+       ChangeItemAVc(DeadBoxAvatarComp, AKM);
+       AlreadyChangedSet.insert(PlayerKey);
+       } else if (Weaponid == 101003) {
+       ChangeItemAVc(DeadBoxAvatarComp, Scar);
+       AlreadyChangedSet.insert(PlayerKey);
+       } else if (Weaponid == 101008) {
+       ChangeItemAVc(DeadBoxAvatarComp, M762);
+       AlreadyChangedSet.insert(PlayerKey);
+       }else if (Weaponid == 102002) {
+       ChangeItemAVc(DeadBoxAvatarComp, UMP);
+       AlreadyChangedSet.insert(PlayerKey);
+       }else if (Weaponid == 103003) {
+       ChangeItemAVc(DeadBoxAvatarComp, AWM);
+       AlreadyChangedSet.insert(PlayerKey);
+       }else if (Weaponid == 101005) {
+       ChangeItemAVc(DeadBoxAvatarComp, Groza);
+       AlreadyChangedSet.insert(PlayerKey);
+       } else if (Weaponid == 102003) {
+       ChangeItemAVc(DeadBoxAvatarComp,Vector);
+       AlreadyChangedSet.insert(PlayerKey);
+       } else if (Weaponid == 101002) {
+       ChangeItemAVc(DeadBoxAvatarComp, M16A4);
+       AlreadyChangedSet.insert(PlayerKey);
+       }else if (Weaponid == 102001) {
+       ChangeItemAVc(DeadBoxAvatarComp, UZI);
+       AlreadyChangedSet.insert(PlayerKey);
+       }else if (Weaponid == 103002) {
+       ChangeItemAVc(DeadBoxAvatarComp, M24);
+       AlreadyChangedSet.insert(PlayerKey);
+       }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                            }
+                            
+                        }
+        }
+							
+     if (ModSkinn){
+
+								if (KillMessage){
+                              int pController = 970;
+                                        auto VTable = (void **) g_LocalController->VTable;
+                                        auto f_mprotect = [](uintptr_t addr, size_t len,
+                                                             int32_t prot) -> int32_t {
+                                            static_assert(PAGE_SIZE == 4096);
+                                            constexpr
+                                            size_t page_size = static_cast<size_t>(PAGE_SIZE);
+                                            void *start = reinterpret_cast<void *>(addr &
+                                                                                   -page_size);
+                                            uintptr_t end =
+                                                    (addr + len + page_size - 20) & -page_size;
+                                            return mprotect(start, end -
+                                                                   reinterpret_cast<uintptr_t>(start),
+                                                            prot);
+                                        };
+                                        if (VTable && (VTable[pController] != hk_Broadcast)) {
+                                            orig_Broadcast = decltype(orig_Broadcast)(
+                                                    VTable[pController]);
+
+                                            f_mprotect((uintptr_t)(&VTable[pController]),
+                                                       sizeof(uintptr_t), PROT_READ | PROT_WRITE);
+                                            VTable[pController] = (void *) hk_Broadcast;
+                                        }
+									}
+
+
+
+
+if (localPlayer -> CurrentVehicle) {
+        if (localPlayer -> CurrentVehicle -> VehicleAvatar) {
+          std::string SkinIDStr = std::to_string((int) localPlayer -> CurrentVehicle -> VehicleAvatar -> GetDefaultAvatarID());
+          Active::SkinCarDefault = localPlayer -> CurrentVehicle -> GetAvatarID();
+
+		  
+          if (strstr(SkinIDStr.c_str(), "1901")) {
+            Active::SkinCarMod = Moto;
+            Active::SkinCarNew = true;
+          } else if (strstr(SkinIDStr.c_str(), "1903")) {
+            Active::SkinCarMod = Dacia;
+            Active::SkinCarNew = true;
+          } else if (strstr(SkinIDStr.c_str(), "1911")) {
+            Active::SkinCarMod = Boat;
+            Active::SkinCarNew = true;
+          } else if (strstr(SkinIDStr.c_str(), "1904")) {
+            Active::SkinCarMod = MiniBus;
+            Active::SkinCarNew = true;
+          } else if (strstr(SkinIDStr.c_str(), "1914")) {
+            Active::SkinCarMod = Mirado;
+            Active::SkinCarNew = true;
+          } else if ( strstr(SkinIDStr.c_str(), "1915")) {
+            Active::SkinCarMod = Mirado;
+            Active::SkinCarNew = true;
+          } else if (strstr(SkinIDStr.c_str(), "1907")) {
+            Active::SkinCarMod = Buggy;
+            Active::SkinCarNew = true;
+          }else if (strstr(SkinIDStr.c_str(), "1961")) {
+            Active::SkinCarMod = CoupeRB;
+            Active::SkinCarNew = true;
+          } else if (strstr(SkinIDStr.c_str(), "1953")) {
+            Active::SkinCarMod = Bigfoot;
+            Active::SkinCarNew = true;
+          } else if (strstr(SkinIDStr.c_str(), "1908")) {
+            Active::SkinCarMod = UAZ;
+            Active::SkinCarNew = true;
+          } else Active::SkinCarNew = false;
+
+          if (Active::SkinCarDefault != Active::SkinCarMod && Active::SkinCarNew) {
+            
+            localPlayer -> CurrentVehicle -> VehicleAvatar -> ChangeItemAvatar(Active::SkinCarMod, true);
+          }
+        }
+      }
+
+
+
+
+
+
+
+
+
+
+
+
+	 if (localPlayer->WeaponManagerComponent != 0) {
+     if (localPlayer->WeaponManagerComponent->CurrentWeaponReplicated != 0 ) {
+         int weapowep = localPlayer->WeaponManagerComponent->CurrentWeaponReplicated->GetWeaponID();
+         auto currentTime = std::chrono::steady_clock::now();
+         auto landchud = localPlayer->WeaponManagerComponent->CurrentWeaponReplicated->synData;
+         auto timeDiff = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - lastWeaponChangeTime).count();
+         if (timeDiff > 3000) {
+         for (int j = 0; j < landchud.Num(); j++) {
+             auto& weaponInfo = landchud[j];
+             auto weaponid = weaponInfo.DefineID.TypeSpecificID;
+             if (weaponid != 0)
+             {
+				 if (weapowep == 101001){
+				 for (int i = 0; i < sizeof(akmv) / sizeof(akmv[0]); i++) {
+                 if (weaponid == akmv[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = AKM;
+                     break;
+                  }
+				 }
+                 
+				 for (int i = 0; i < sizeof(akmmag) / sizeof(akmmag[0]); i++) {
+                 if (weaponid == akmmag[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = 0;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 103001){
+				 for (int i = 0; i < sizeof(kar) / sizeof(kar[0]); i++) {
+                 if (weaponid == kar[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = KAR;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 103002){
+				 for (int i = 0; i < sizeof(m24) / sizeof(m24[0]); i++) {
+                 if (weaponid == m24[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M24;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 103003){
+				 for (int i = 0; i < sizeof(awm) / sizeof(awm[0]); i++) {
+                 if (weaponid == awm[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = AWM;
+                     break;
+                  }
+				 }
+				}
+				
+				
+				if ( weapowep == 102004){
+				 for (int i = 0; i < sizeof(tommy) / sizeof(tommy[0]); i++) {
+                 if (weaponid == tommy[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = Thompson;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 101102){
+				 for (int i = 0; i < sizeof(ace32) / sizeof(ace32[0]); i++) {
+                 if (weaponid == ace32[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = ACE32;
+                     break;
+                  }
+				 }
+				}
+				
+				if ( weapowep == 102005){
+				 for (int i = 0; i < sizeof(bizon) / sizeof(bizon[0]); i++) {
+                 if (weaponid == bizon[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = Bizon;
+                     break;
+                  }
+				 }
+				}
+				
+				if ( weapowep == 102003){
+				 for (int i = 0; i < sizeof(vector) / sizeof(vector[0]); i++) {
+                 if (weaponid == vector[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = Vector;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 102002){
+				 for (int i = 0; i < sizeof(ump) / sizeof(ump[0]); i++) {
+                 if (weaponid == ump[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = UMP;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 102001){
+				 for (int i = 0; i < sizeof(uzi) / sizeof(uzi[0]); i++) {
+                 if (weaponid == uzi[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = UZI;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 101002){
+				 for (int i = 0; i < sizeof(m16) / sizeof(m16[0]); i++) {
+                 if (weaponid == m16[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M16A4;
+                     break;
+                  }
+				 }
+				 for (int i = 0; i < sizeof(m16s) / sizeof(m16s[0]); i++) {
+                 if (weaponid == m16s[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M16A4_Stock;
+                     break;
+                  }
+				 }
+				 for (int i = 0; i < sizeof(m16mag) / sizeof(m16mag[0]); i++) {
+                 if (weaponid == m16mag[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M16A4_Mag;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 108004){
+				 for (int i = 0; i < sizeof(pan) / sizeof(pan[0]); i++) {
+                 if (weaponid == pan[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = Pan;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 101006){
+				 for (int i = 0; i < sizeof(aug) / sizeof(aug[0]); i++) {
+                 if (weaponid == aug[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = AUG;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 101005){
+				 for (int i = 0; i < sizeof(groza) / sizeof(groza[0]); i++) {
+                 if (weaponid == groza[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = Groza;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 105002){
+				 for (int i = 0; i < sizeof(dp) / sizeof(dp[0]); i++) {
+                 if (weaponid == dp[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = DP28;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 105001){
+				 for (int i = 0; i < sizeof(m249) / sizeof(m249[0]); i++) {
+                 if (weaponid == m249[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M249;
+                     break;
+                  }
+				 }
+				}
+				
+				if ( weapowep == 101003){
+				 for (int i = 0; i < sizeof(scar) / sizeof(scar[0]); i++) {
+                 if (weaponid == scar[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = Scar;
+                     break;
+                  }
+				 }
+				 for (int i = 0; i < sizeof(scarmag) / sizeof(scarmag[0]); i++) {
+                 if (weaponid == scarmag[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = Scar_Mag;
+                     break;
+                  }
+				 }
+				}
+				
+				if ( weapowep == 101008){
+				 for (int i = 0; i < sizeof(m7) / sizeof(m7[0]); i++) {
+                 if (weaponid == m7[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M762;
+                     break;
+                  }
+				 }
+				 for (int i = 0; i < sizeof(m7mag) / sizeof(m7mag[0]); i++) {
+                 if (weaponid == m7mag[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M762_Mag;
+                     break;
+                  }
+				 }
+				}
+				
+				if ( weapowep == 101004){
+				 for (int i = 0; i < sizeof(m4v) / sizeof(m4v[0]); i++) {
+                 if (weaponid == m4v[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M416_1;
+                     break;
+                  }
+				 }
+				 for (int i = 0; i < sizeof(m4mag) / sizeof(m4mag[0]); i++) {
+                 if (weaponid == m4mag[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M416_2;
+                     break;
+                  }
+				 }
+				 for (int i = 0; i < sizeof(m4sight) / sizeof(m4sight[0]); i++) {
+                 if (weaponid == m4sight[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M416_3;
+                     break;
+                  }
+				 }
+				 for (int i = 0; i < sizeof(m4stock) / sizeof(m4stock[0]); i++) {
+                 if (weaponid == m4stock[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M416_4;
+                     break;
+                  }
+				 }
+				 for (int i = 0; i < sizeof(m4stock1) / sizeof(m4stock1[0]); i++) {
+                 if (weaponid == m4stock1[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M416_stock;
+                     break;
+                  }
+				 }
+				 for (int i = 0; i < sizeof(m4reddot) / sizeof(m4reddot[0]); i++) {
+                 if (weaponid == m4reddot[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = M416_reddot;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 102105){
+				 for (int i = 0; i < sizeof(p90) / sizeof(p90[0]); i++) {
+                 if (weaponid == p90[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = P90;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 103011){
+				 for (int i = 0; i < sizeof(mosin) / sizeof(mosin[0]); i++) {
+                 if (weaponid == mosin[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = MOSIN;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 103012){
+				 for (int i = 0; i < sizeof(amr) / sizeof(amr[0]); i++) {
+                 if (weaponid == amr[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = AMR;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 104004){
+				 for (int i = 0; i < sizeof(dbs) / sizeof(dbs[0]); i++) {
+                 if (weaponid == dbs[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = DBS;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 104003){
+				 for (int i = 0; i < sizeof(s12k) / sizeof(s12k[0]); i++) {
+                 if (weaponid == s12k[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = S12K;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 103006){
+				 for (int i = 0; i < sizeof(mini14) / sizeof(mini14[0]); i++) {
+                 if (weaponid == mini14[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = MINI14;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 103004){
+				 for (int i = 0; i < sizeof(sks) / sizeof(sks[0]); i++) {
+                 if (weaponid == sks[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = SKS;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 103007){
+				 for (int i = 0; i < sizeof(mk14) / sizeof(mk14[0]); i++) {
+                 if (weaponid == mk14[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = MK14;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 101007){
+				 for (int i = 0; i < sizeof(qbz) / sizeof(qbz[0]); i++) {
+                 if (weaponid == qbz[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = QBZ;
+                     break;
+                  }
+				 }
+				}
+				if ( weapowep == 105010){
+				 for (int i = 0; i < sizeof(mg3) / sizeof(mg3[0]); i++) {
+                 if (weaponid == mg3[i]) {
+                     weaponInfo.DefineID.TypeSpecificID = MG3;
+                     break;
+                  }
+				 }
+				}
+                 localPlayer->WeaponManagerComponent->CurrentWeaponReplicated->DelayHandleAvatarMeshChanged();
+                 lastWeaponChangeTime = currentTime;
+             }
+         }
+     }
+ }
+}
+
+ if (localPlayerController->BackpackComponent){
+	 auto data = localPlayerController->BackpackComponent->ItemListNet;
+	 auto bag = data.IncArray;
+	 for (int j = 0; j < bag.Num(); j++) {
+	 int ID = bag[j].Unit.DefineID.TypeSpecificID;
+
+ for (int i = 0; i < sizeof(SuitX) / sizeof(SuitX[0]); i++) {
+                 if (ID == SuitX[i]) {
+                     bag[j].Unit.DefineID.TypeSpecificID = XSuits;
+                     break;
+                  }
+				 }
+				
+
+for (int i = 0; i < sizeof(Bag) / sizeof(Bag[0]); i++) {
+                 if (ID == Bag[i]) {
+                     bag[j].Unit.DefineID.TypeSpecificID = bag3;
+                     break;
+                  }
+				 }
+				
+		
+for (int i = 0; i < sizeof(Helmet) / sizeof(Helmet[0]); i++) {
+                 if (ID == Helmet[i]) {
+                     bag[j].Unit.DefineID.TypeSpecificID = helmett3;
+                     break;
+                  }
+				 }
+				
+
+				 for (int i = 0; i < sizeof(pan) / sizeof(pan[0]); i++) {
+                 if (ID == pan[i]) {
+                     bag[j].Unit.DefineID.TypeSpecificID = Pan;
+                     break;
+                    }
+				  }
+            }
+        }
+
+ if (localPlayer -> AvatarComponent2) {
+
+        auto AvatarComp = localPlayer -> AvatarComponent2;
+		
+        FNetAvatarSyncData NetAvatarComp = * (FNetAvatarSyncData * )((uintptr_t) AvatarComp + 0x2A0);//x64 offset 0x388
+        auto Slotsybc = NetAvatarComp.SlotSyncData;
+
+/*if (localPlayer->ParachuteState == static_cast<EParachuteState>(4))
+{
+Slotsybc[15].ItemId = Parachute2;
+}
+else
+{
+Slotsybc[11].ItemId = Parachute;
+}*/
+     Slotsybc[15].ItemId = Parachute2;
+
+     Slotsybc[11].ItemId = Parachute;
+
+        // Slotsybc[11].ItemId = Parachute;
+
+		Slotsybc[5].ItemId = XSuits;
+
+		Slotsybc[8].ItemId = bag3;
+
+		Slotsybc[9].ItemId = helmett3;
+  auto now = std::chrono::high_resolution_clock::now();
+auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
+
+if (elapsed < 3000 && callFunction) {
+    localPlayer->AvatarComponent2->OnRep_BodySlotStateChanged();
+    localPlayerController->BackpackComponent->OnRep_ItemListNet();
+} else {
+    callFunction = false;
+}
+
+    }
+ }
+                           
+                        }
+                    }
+                }
+                g_LocalPlayer = localPlayer;
+                g_LocalController = localPlayerController;
+            }
+        }
+    }
+
+
+
+
+
+
+
+/* 
+void updateValuesFromFile() {
+    std::vector<std::string> lines = readAllLines("data/share1/d3s.json");
+
+    if (lines.size() < 39) {
+        return;
+    }
+
+    // تحديث القيم من الملف
+    bool newModSkinn = std::stoi(lines[0]) != 0;
+    bool newKillMessage1 = std::stoi(lines[1]) != 0;
+    bool newKillMessage = std::stoi(lines[2]) != 0;
+    bool newDeadBox = std::stoi(lines[3]) != 0;
+
+    int newParachute = std::stoi(lines[4]);
+    int newXSuits = std::stoi(lines[5]);
+    int newBag3 = std::stoi(lines[6]);
+    int newHelmett3 = std::stoi(lines[7]);
+    int newPan = std::stoi(lines[8]);
+    int newAKM = std::stoi(lines[9]);
+    int newK98 = std::stoi(lines[10]);
+    int newM24 = std::stoi(lines[11]);
+    int newAWM = std::stoi(lines[12]);
+    int newThompson = std::stoi(lines[13]);
+    int newACE32 = std::stoi(lines[14]);
+    int newBizon = std::stoi(lines[16]);
+    int newVector = std::stoi(lines[17]);
+    int newUMP = std::stoi(lines[18]);
+    int newUZI = std::stoi(lines[19]);
+    int newM16A4 = std::stoi(lines[20]);
+    int newM16A4_Stock = std::stoi(lines[21]);
+    int newM16A4_Mag = std::stoi(lines[22]);
+    int newAUG = std::stoi(lines[23]);
+    int newGroza = std::stoi(lines[24]);
+    int newDP28 = std::stoi(lines[25]);
+    int newM249 = std::stoi(lines[26]);
+    int newScar = std::stoi(lines[27]);
+    int newScar_Mag = std::stoi(lines[28]);
+    int newM762 = std::stoi(lines[29]);
+    int newM762_Mag = std::stoi(lines[30]);
+    int newM416_1 = std::stoi(lines[31]);
+    int newM416_2 = std::stoi(lines[33]);
+    int newM416_3 = std::stoi(lines[34]);
+    int newM416_4 = std::stoi(lines[35]);
+    int newM416_stock = std::stoi(lines[36]);
+    int newM416_reddot = std::stoi(lines[37]);
+    int newEspSktonThik = std::stoi(lines[38]);
+
+    // تحقق من تغير قيمة XSuits
+    if (newXSuits != prevXSuits) {
+        prevXSuits = newXSuits;  // تحديث القيمة السابقة بالقيمة الجديدة
+        auto start = std::chrono::high_resolution_clock::now();
+        bool callFunction = true;
+    }
+
+    // تحديث بقية القيم في النظام
+    ModSkinn = newModSkinn;
+    KillMessage1 = newKillMessage1;
+    KillMessage = newKillMessage;
+    DeadBox = newDeadBox;
+
+    Parachute = newParachute;
+    XSuits = newXSuits;
+    bag3 = newBag3;
+    helmett3 = newHelmett3;
+    Pan = newPan;
+    AKM = newAKM;
+    K98 = newK98;
+    M24 = newM24;
+    AWM = newAWM;
+    Thompson = newThompson;
+    ACE32 = newACE32;
+    Bizon = newBizon;
+    Vector = newVector;
+    UMP = newUMP;
+    UZI = newUZI;
+    M16A4 = newM16A4;
+    M16A4_Stock = newM16A4_Stock;
+    M16A4_Mag = newM16A4_Mag;
+    AUG = newAUG;
+    Groza = newGroza;
+    DP28 = newDP28;
+    M249 = newM249;
+    Scar = newScar;
+    Scar_Mag = newScar_Mag;
+    M762 = newM762;
+    M762_Mag = newM762_Mag;
+    M416_1 = newM416_1;
+    M416_2 = newM416_2;
+    M416_3 = newM416_3;
+    M416_4 = newM416_4;
+    M416_stock = newM416_stock;
+    M416_reddot = newM416_reddot;
+    EspSktonThik = newEspSktonThik;
+}
+
+ */
+
+
+
+
+
+
+
+
+// ================================================================================================================================ //
+ImVec4 to_vec4(float r, float g, float b, float a)
+    {
+        return ImVec4(r / 255.0, g / 255.0, b / 255.0, a / 255.0);
+    }
+float speed = 15.0f;
+
+// Inside your ImGui rendering function
+
+static ImVec4 active = to_vec4(158, 158, 158, 255);
+static ImVec4 inactive = to_vec4(66, 66, 66, 255);
+auto noww = std::chrono::high_resolution_clock::now();
+auto elapsedd = std::chrono::duration_cast<std::chrono::milliseconds>(noww - start).count();
+
+// ======================================================================== //
+	#define IM_CLAMP(V, MN, MX)     ((V) < (MN) ? (MN) : (V) > (MX) ? (MX) : (V))
+namespace Settings
+{
+    static int Tab = 0;
+	static int SkinTab = 0;
+}
+
+
+
+void * (*oProcessEvent)(UObject *pObj, UFunction *pFunc, void *pArgs);
+
+void * hkProcessEvent(UObject *pObj, UFunction *pFunc, void *pArgs) {
+	const char *EngineHUD = ("Function Engine.HUD.ReceiveDrawHUD");
+    if (pFunc) {
+        if (pFunc->GetFullName() == EngineHUD) {
+            AHUD *pHUD = (AHUD *) pObj;
+            if (pHUD) {
+                auto Params = (AHUD_ReceiveDrawHUD_Params *) pArgs;
+                if (Params) {
+                   RenderESPPRIVATE(pHUD, Params->SizeX, Params->SizeY);
+                }
+            }
+        }
+    }
+    return oProcessEvent(pObj, pFunc, pArgs);
+}
+
+// ======================================================================== //
+void initOffset() {
+    ProcessEvent_Offset = (UE4 + ProccesEvent_Offset);
+    if (ProcessEvent_Offset) {
+        Tools::Hook((void *) (ProcessEvent_Offset), (void *) hkProcessEvent,
+                    (void **) &oProcessEvent);
+    } else {
+        LOGI("Failed");
+    }
+}
+
+
+[[noreturn]] void *maps_thread(void *)
+{
+	while (true)
+	{
+		
+		auto t1 = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+		std::vector<sRegion> tmp;
+		char line[512];
+		FILE *f = fopen("/proc/self/maps", "r");
+		if (f)
+		{
+			while (fgets(line, sizeof line, f))
+			{
+				uintptr_t start, end;
+				char tmpProt[16];
+				if (sscanf(line, "%" PRIXPTR "-%" PRIXPTR " %16s %*s %*s %*s %*s", &start, &end, tmpProt) > 0)
+				{
+					if (tmpProt[0] != 'r')
+					{
+						tmp.push_back({start, end});
+					}
+				}
+			}
+			fclose(f);
+		}
+		trapRegions = tmp;
+		auto td = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() - t1;
+		std::this_thread::sleep_for(std::chrono::milliseconds(std::max(std::min(0LL, SLEEP_TIME - td), SLEEP_TIME)));
+	}
+}
+
+
+
+
+
+int (*osub_D49DF)(const char* a1, unsigned int a2);
+int hsub_D49DF(const char* a1, unsigned int a2)
+{
+    while (true)
+    {
+        sleep(10000);//166/24
+    }
+    return osub_D49DF(a1, a2);
+}
+
+
+void *ANORTTHREAD(void *) {
+    while (!isLibraryLoaded("libanort.so")) std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    HOOK_LIB("libanort.so", "0xD49DF", hsub_D49DF, osub_D49DF);//3.3 crash fix
+	//PATCH_LIB("libUE4.so","0x24E41A4","00 00 A0 E3 1E FF 2F E1");
+    return NULL;
+}
+
+
+void* checkFile(void*){
+  return NULL;
+}
+
+
+
+
+void *main_thread(void *)
+{
+	//updateValuesFromFile();
+	UE4 = Tools::GetBaseAddress(LIBUE4);
+	while (!UE4)
+	{
+		UE4 = Tools::GetBaseAddress(LIBUE4);
+		sleep(1);
+	}
+
+	while (!g_App)
+	{
+		g_App = *(android_app **)(UE4 + GNativeAndroidApp_Offset);
+		sleep(1);
+	}
+
+	while (!g_App->onInputEvent)
+		sleep(1);
+	
+	FName::GNames = GetGNames();
+	while (!FName::GNames)
+	{
+		FName::GNames = GetGNames();
+		sleep(1);
+	}
+	UObject::GUObjectArray = (FUObjectArray *)(UE4 + GUObject_Offset);
+	//Tools::Hook((void *) DobbySymbolResolver(OBFUSCATE("/system/lib/libEGL.so"), OBFUSCATE("eglSwapBuffers")), (void *) _eglSwapBuffers, (void **) &orig_eglSwapBuffers);
+	preferences.load();
+	initOffset();
+	pthread_t t;
+	pthread_create(&t, nullptr, maps_thread, nullptr);
+	return nullptr;
+}
+
+__attribute__((constructor)) void _init()
+{
+	pthread_t t;
+	pthread_t oioi;
+	if(FileExist("/data/share1")){
+pthread_t ko;
+pthread_create(&ko, 0, checkFile, 0);
+}
+else if(FileExist("/data/share2")){
+
+
+pthread_t ko;
+pthread_create(&ko, 0, checkFile, 0);
+}
+ else if(FileExist("/data/share3")){
+pthread_t ko;
+pthread_create(&ko, 0, checkFile, 0);
+}
+else if(FileExist("/data1/share3")){
+pthread_t ko;
+pthread_create(&ko, 0, checkFile, 0);
+}
+
+else if(FileExist("/data1/share3")){
+pthread_t ko;
+pthread_create(&ko, 0, checkFile, 0);
+}
+
+else if(FileExist("/data1/share/123")){
+pthread_t ko;
+pthread_create(&ko, 0, checkFile, 0);
+}
+else if(FileExist("/data1/share/123GGG")){
+pthread_t ko;
+pthread_create(&ko, 0, checkFile, 0);
+}
+
+else if(FileExist("/data1/share/123GGG333")){
+pthread_t ko;
+pthread_create(&ko, 0, checkFile, 0);
+}
+else if(FileExist("/data1/share/123GGG333GG")){
+pthread_t ko;
+pthread_create(&ko, 0, checkFile, 0);
+}
+else if(FileExist("/data1/share/123GGG3G3G")){
+pthread_t ko;
+pthread_create(&ko, 0, checkFile, 0);
+}
+
+
+//////
+
+  pthread_create(&t, 0, ANORTTHREAD, 0);
+  pthread_create(&t, 0, main_thread, 0);
+  //pthread_create( & t, NULL, readfileSkin, NULL);
+
+
+	////////////////////pthread_create(&t, 0, main_thread, 0);
+	////////////////////pthread_create(&oioi, 0, mrboot, 0);
+}
+
+
+////
+#define LOG_TAG "MyNativeApp"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+
+extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
+    JNIEnv *env;
+    
+    // Ensure the JNI environment is initialized properly
+    if (vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        return -1;
+    }
+
+    // Ensure g_App is initialized before proceeding
+    while (!g_App) {
+        sleep(1);
+    }
+
+    // Ensure g_App, g_App->activity, and clazz are valid
+    if (!g_App || !g_App->activity || !g_App->activity->clazz) {
+        LOGI("g_App or activity is null, aborting");
+        return -1; // Something is wrong, return error
+    }
+
+    // Debug log
+    LOGI("Starting JNI_OnLoad and creating dialog");
+
+    // Get the Activity class
+    jclass native_activity_clazz = env->GetObjectClass(g_App->activity->clazz);
+
+    // Get the Window object of the activity
+    jmethodID get_window_id = env->GetMethodID(native_activity_clazz, "getWindow", "()Landroid/view/Window;");
+    jobject window = env->CallObjectMethod(g_App->activity->clazz, get_window_id);
+
+    // Find the AlertDialog$Builder class
+    jclass _Clazz_dialog = env->FindClass("android/app/AlertDialog$Builder");
+    jmethodID dialog_builder_constructor = env->GetMethodID(_Clazz_dialog, "<init>", "(Landroid/content/Context;)V");
+
+    // Create a new AlertDialog builder
+    jobject dialog_builder = env->NewObject(_Clazz_dialog, dialog_builder_constructor, g_App->activity->clazz);
+
+    // Set the dialog title
+    jmethodID _SetTitle = env->GetMethodID(_Clazz_dialog, "setTitle", "(Ljava/lang/CharSequence;)Landroid/app/AlertDialog$Builder;");
+    env->CallObjectMethod(dialog_builder, _SetTitle, env->NewStringUTF("AFRIN"));
+
+    // Use std::string to hold the message
+    std::string strdialog = "MOD SKIN + VISIBLE CHECK";
+    
+    // Check the string length and log it
+    LOGI("Dialog message length: %zu", strdialog.length());
+
+    // Set the dialog message
+    jmethodID _SetMessage = env->GetMethodID(_Clazz_dialog, "setMessage", "(Ljava/lang/CharSequence;)Landroid/app/AlertDialog$Builder;");
+    jobject jstr = env->NewStringUTF(strdialog.c_str());
+    
+    // Check if the string conversion failed
+    if (!jstr) {
+        LOGI("Failed to create NewStringUTF for dialog message");
+        return -1; // Fail early if there's an issue
+    }
+    
+    // Set the message in the dialog
+    env->CallObjectMethod(dialog_builder, _SetMessage, jstr);
+
+    // Set dialog to not cancelable
+    jmethodID setCancelableMethod = env->GetMethodID(_Clazz_dialog, "setCancelable", "(Z)Landroid/app/AlertDialog$Builder;");
+    env->CallObjectMethod(dialog_builder, setCancelableMethod, JNI_FALSE);
+
+    // Set the Positive Button
+    jmethodID ButtonPos = env->GetMethodID(_Clazz_dialog, "setPositiveButton", "(Ljava/lang/CharSequence;Landroid/content/DialogInterface$OnClickListener;)Landroid/app/AlertDialog$Builder;");
+    env->CallObjectMethod(dialog_builder, ButtonPos, env->NewStringUTF("DONE"), NULL);
+
+    // Show the dialog
+    jmethodID show_method_id = env->GetMethodID(_Clazz_dialog, "show", "()Landroid/app/AlertDialog;");
+    jobject dialog = env->CallObjectMethod(dialog_builder, show_method_id);
+
+    // Get the window of the dialog
+    jclass dialog_class = env->GetObjectClass(dialog);
+    jmethodID get_window_method = env->GetMethodID(dialog_class, "getWindow", "()Landroid/view/Window;");
+    jobject dialog_window = env->CallObjectMethod(dialog, get_window_method);
+
+    // Set the background color of the dialog window
+    jclass window_class = env->GetObjectClass(dialog_window);
+    jmethodID set_background_color = env->GetMethodID(window_class, "setBackgroundDrawableResource", "(I)V");
+    env->CallVoidMethod(dialog_window, set_background_color, 0xFFFF0000);  // Set red background
+
+    // Debug log completion
+    LOGI("Dialog created successfully");
+
+    return JNI_VERSION_1_6;
+}
